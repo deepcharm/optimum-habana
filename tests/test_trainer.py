@@ -414,8 +414,8 @@ if is_torch_available():
     ):
         label_names = kwargs.get("label_names", None)
         gradient_checkpointing = kwargs.get("gradient_checkpointing", False)
-        train_dataset = RegressionDataset(length=train_len, label_names=label_names)
-        eval_dataset = RegressionDataset(length=eval_len, label_names=label_names)
+        train_dataset = RegressionDataset(length=train_len, label_names=label_names) # BUG Not using a, b arguments
+        eval_dataset = RegressionDataset(length=eval_len, label_names=label_names) # BUG Not using a, b arguments
 
         model_init = kwargs.pop("model_init", None)
         if model_init is not None:

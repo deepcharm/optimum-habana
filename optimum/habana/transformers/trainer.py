@@ -112,6 +112,7 @@ from .integrations.deepspeed import deepspeed_init
 from .trainer_utils import convert_into_dtypes, get_dtype
 from .training_args import GaudiTrainingArguments
 
+import habana_frameworks.torch.hpu as hpu
 
 if is_datasets_available():
     import datasets
@@ -1795,6 +1796,9 @@ class GaudiTrainer(Trainer):
         """
         args = self.args
 
+	# Save the graph outputs at intermediate steps
+        self.loss_save = []
+
         prediction_loss_only = prediction_loss_only if prediction_loss_only is not None else args.prediction_loss_only
 
         # if eval is called w/o train, handle model prep here
@@ -2085,7 +2089,41 @@ class GaudiTrainer(Trainer):
                 if has_labels or loss_without_labels:
                     with self.compute_loss_context_manager():
                         loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                    
+                    ########################### MAX: BUG?????????????                    
+                    # Save input to the memcpy node 
+                    loss0 = loss
+                    ##################################################
+                    # Adding this will solve the accuracu issue
+                    #self.htcore.mark_step()
+                    
+                    # At this point loss is already a scalar tensor, so the the mean() will be replaced by
+                    # memcpy node in the post-graph
                     loss = loss.mean().detach()
+                    
+                    # Detect the accuracy error by looking up the losses computed at previous steps.
+                    # Expected distinct values at each step.
+                    loss_cpu = loss.item()
+                    if len(self.loss_save) > 0:
+                        for i, loss_save in enumerate(self.loss_save):
+                            # If found the same value => we have the accuracy issue!
+                            if abs(loss_save - loss_cpu) < 0.001:
+                                # Ensure to sync the device
+                                hpu.synchronize()
+
+                                # Sleeping 20 secs to make the synapse log inspection easier.
+                                import time
+                                time.sleep(20)
+
+                                # We flush the graph only at this point:
+                                # loss0 contains the original input to the final memcpy node.
+                                print(f"\033[91mFOUND ACCURACY ERROR: The value {loss_cpu} at step {len(self.loss_save)+1} is same as at step {i}).\n"
+                                      f"The input to the memcpy was {loss0}\x1b[0m")
+                                
+                                # Exiting, to avoid any extra graphs
+                                exit(0)
+
+                    self.loss_save.append(loss_cpu)
 
                     if isinstance(outputs, dict):
                         logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
